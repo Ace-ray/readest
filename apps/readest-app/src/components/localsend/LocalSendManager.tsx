@@ -9,7 +9,7 @@ import { useLibraryStore } from '@/store/libraryStore';
 import { useLocalSendStore } from '@/store/localsendStore';
 import { isTauriAppPlatform } from '@/services/environment';
 import { ingestFile } from '@/services/ingestService';
-import { isNearbyPairingAllowed } from '@/utils/access';
+import { isNearbyPairingAllowed, isSelfHosted } from '@/utils/access';
 import {
   DEFAULT_ALIAS_NAMED_KEY,
   getLocalSendAlias,
@@ -82,7 +82,9 @@ const LocalSendManager: React.FC = () => {
   // Pairing entitlement, checked at receive time so a lapsed plan brings the
   // confirmation dialogs back while the pairing records stay intact.
   const { userProfilePlan, customizationPurchased } = useQuotaStats();
-  const pairingEntitled = isNearbyPairingAllowed(userProfilePlan ?? 'free', customizationPurchased);
+  // Paywall removed: self-hosted builds are always entitled to pair.
+  const pairingEntitled =
+    isSelfHosted() || isNearbyPairingAllowed(userProfilePlan ?? 'free', customizationPurchased);
 
   const toast = useCallback(
     (message: string, type: 'info' | 'error' | 'success' | 'warning' = 'info') =>

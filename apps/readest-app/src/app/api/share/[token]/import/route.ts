@@ -4,6 +4,7 @@ import { copyObject, objectExists } from '@/utils/object';
 import {
   STORAGE_QUOTA_GRACE_BYTES,
   getStoragePlanData,
+  isSelfHosted,
   validateUserAndToken,
 } from '@/utils/access';
 import { rejectionToHttp, resolveActiveShare } from '@/libs/shareServer';
@@ -115,8 +116,9 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   // Quota check before doing any byte-copy work. JWT-based but consistent
   // with how the existing upload endpoint enforces it.
+  // Paywall removed: self-hosted deployments skip the storage quota check.
   const { usage, quota } = getStoragePlanData(jwt);
-  if (usage + share.bookSize > quota + STORAGE_QUOTA_GRACE_BYTES) {
+  if (!isSelfHosted() && usage + share.bookSize > quota + STORAGE_QUOTA_GRACE_BYTES) {
     return NextResponse.json(
       { error: 'Insufficient storage quota', code: 'quota_exceeded', usage, quota },
       { status: 402 },

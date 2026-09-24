@@ -3,6 +3,7 @@ import { createSupabaseAdminClient } from '@/utils/supabase';
 import { corsAllMethods, runMiddleware } from '@/utils/cors';
 import {
   getStoragePlanData,
+  isSelfHosted,
   validateUserAndToken,
   STORAGE_QUOTA_GRACE_BYTES,
 } from '@/utils/access';
@@ -106,7 +107,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .single();
     const usage = planRow?.storage_usage_bytes ?? claimUsage;
 
-    if (usage + fileSize > quota + STORAGE_QUOTA_GRACE_BYTES) {
+    // Paywall removed: self-hosted deployments skip the storage quota check.
+    if (!isSelfHosted() && usage + fileSize > quota + STORAGE_QUOTA_GRACE_BYTES) {
       return res.status(403).json({ error: 'Insufficient storage quota', usage });
     }
 

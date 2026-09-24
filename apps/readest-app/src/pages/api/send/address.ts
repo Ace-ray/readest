@@ -6,6 +6,7 @@ import {
   getCustomizationPurchased,
   getUserProfilePlan,
   isEmailInPlan,
+  isSelfHosted,
   validateUserAndToken,
 } from '@/utils/access';
 import {
@@ -41,14 +42,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Email-in is a paid feature. The client renders a friendly upgrade
   // card on receiving this response, so the structured body (code +
   // requiredPlans) matters — UI keys off it.
-  const plan = getUserProfilePlan(token);
-  if (!isEmailInPlan(plan, getCustomizationPurchased(token))) {
-    return res.status(403).json({
-      error: 'Email-in is available on the Plus, Pro, and Lifetime plans',
-      code: 'plan_required',
-      plan,
-      requiredPlans: EMAIL_IN_PLANS,
-    });
+  // Paywall removed: self-hosted deployments skip the plan check.
+  if (!isSelfHosted()) {
+    const plan = getUserProfilePlan(token);
+    if (!isEmailInPlan(plan, getCustomizationPurchased(token))) {
+      return res.status(403).json({
+        error: 'Email-in is available on the Plus, Pro, and Lifetime plans',
+        code: 'plan_required',
+        plan,
+        requiredPlans: EMAIL_IN_PLANS,
+      });
+    }
   }
 
   const supabase = createSupabaseAdminClient();

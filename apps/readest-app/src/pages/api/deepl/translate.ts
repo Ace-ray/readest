@@ -5,6 +5,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare';
 import {
   getDailyTranslationPlanData,
   getSubscriptionPlan,
+  isSelfHosted,
   validateUserAndToken,
 } from '@/utils/access';
 import { ErrorCodes } from '@/services/translators';
@@ -43,7 +44,8 @@ const checkDailyUsage = async (userId: string, token: string, chars: number) => 
   const { quota: dailyQuota } = getDailyTranslationPlanData(token);
   const dailyUsage = await UsageStatsManager.getCurrentUsage(userId, 'translation_chars', 'daily');
 
-  if (dailyQuota <= dailyUsage + chars) {
+  // Paywall removed: self-hosted deployments skip the daily translation quota.
+  if (!isSelfHosted() && dailyQuota <= dailyUsage + chars) {
     throw new Error(ErrorCodes.DAILY_QUOTA_EXCEEDED);
   }
   return dailyUsage;

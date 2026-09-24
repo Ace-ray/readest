@@ -6,6 +6,7 @@ import {
   getStoragePlanData,
   getTranslationPlanData,
   getUserProfilePlan,
+  isSelfHosted,
 } from '@/utils/access';
 import {
   setCachedCustomizationPurchased,
@@ -39,6 +40,21 @@ export const useQuotaStats = (briefName = false) => {
       return;
     }
 
+    const profilePlan = getUserProfilePlan(token);
+    setUserProfilePlan(profilePlan);
+    // Non-React modules (transferManager, syncCategories) need the plan
+    // synchronously for the cloud-sync provider gate; cache it here, the
+    // one place the plan is resolved from the JWT.
+    setCachedUserPlan(profilePlan);
+    setCachedCustomizationPurchased(customizationPurchased);
+
+    // Paywall removed: self-hosted builds have unlimited quotas, so there is
+    // nothing meaningful to display in the usage bars.
+    if (isSelfHosted()) {
+      setQuotas([]);
+      return;
+    }
+
     const storagPlan = getStoragePlanData(token);
     const inGB = storagPlan.quota > 1e9;
     const storageQuota: QuotaType = {
@@ -67,13 +83,6 @@ export const useQuotaStats = (briefName = false) => {
       unit: 'K',
       resetAt: translationResetAt,
     };
-    const profilePlan = getUserProfilePlan(token);
-    setUserProfilePlan(profilePlan);
-    // Non-React modules (transferManager, syncCategories) need the plan
-    // synchronously for the cloud-sync provider gate; cache it here, the
-    // one place the plan is resolved from the JWT.
-    setCachedUserPlan(profilePlan);
-    setCachedCustomizationPurchased(customizationPurchased);
     setQuotas([storageQuota, translationQuota]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, customizationPurchased]);

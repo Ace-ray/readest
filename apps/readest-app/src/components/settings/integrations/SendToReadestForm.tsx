@@ -12,6 +12,7 @@ import {
   getCustomizationPurchased,
   getUserProfilePlan,
   isEmailInPlan,
+  isSelfHosted,
 } from '@/utils/access';
 import { navigateToLogin, navigateToProfile } from '@/utils/nav';
 import { eventDispatcher } from '@/utils/event';
@@ -57,7 +58,8 @@ const SendToReadestForm: React.FC<SendToReadestFormProps> = ({ onBack }) => {
   // on a slow client.
   const [userPlan, setUserPlan] = useState<UserPlan | null>(null);
   const [customizationPurchased, setCustomizationPurchased] = useState(false);
-  const canUseEmailIn = userPlan !== null && isEmailInPlan(userPlan, customizationPurchased);
+  const canUseEmailIn =
+    userPlan !== null && (isSelfHosted() || isEmailInPlan(userPlan, customizationPurchased));
   // Editing affordances stay collapsed once configured, keeping the panel
   // minimal; the refresh / plus icons reveal the input rows.
   const [editingAddress, setEditingAddress] = useState(false);
@@ -81,7 +83,7 @@ const SendToReadestForm: React.FC<SendToReadestFormProps> = ({ onBack }) => {
       const purchasedCustomization = token ? getCustomizationPurchased(token) : false;
       setUserPlan(plan);
       setCustomizationPurchased(purchasedCustomization);
-      if (!isEmailInPlan(plan, purchasedCustomization)) {
+      if (!isSelfHosted() && !isEmailInPlan(plan, purchasedCustomization)) {
         setLoading(false);
         return;
       }

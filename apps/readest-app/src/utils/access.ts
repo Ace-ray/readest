@@ -170,11 +170,10 @@ export const PREMIUM_PLANS: readonly UserPlan[] = ['plus', 'pro'];
  * the browser, and straight from the environment on the server where the
  * window-injected config does not exist.
  */
-export const isSelfHosted = (): boolean =>
-  getRuntimeConfig()?.selfHosted === true ||
-  // `??` would stop at an empty string, so an explicitly blank SELF_HOSTED
-  // would mask NEXT_PUBLIC_SELF_HOSTED. `||` falls through on empty too.
-  (process.env['SELF_HOSTED'] || process.env['NEXT_PUBLIC_SELF_HOSTED']) === 'true';
+// Paywall removed: every deployment is treated as self-hosted, which
+// unlocks every premium feature (TTS cache, ABS offline, third-party cloud
+// sync, Nearby pairing, Email-in) regardless of the JWT plan claim.
+export const isSelfHosted = (): boolean => true;
 
 /**
  * The single gate for premium features: a self-hosted deployment, a paid
@@ -193,7 +192,11 @@ export const getStoragePlanData = (token: string) => {
   const runtimeConfig = getRuntimeConfig();
   const fixedQuota =
     runtimeConfig?.storageFixedQuota ?? parseInt(process.env['STORAGE_FIXED_QUOTA'] ?? '0');
-  const planQuota = fixedQuota || DEFAULT_STORAGE_QUOTA[plan] || DEFAULT_STORAGE_QUOTA['free'];
+  // Paywall removed: self-hosted deployments get an effectively unlimited
+  // storage quota regardless of the JWT plan claim.
+  const planQuota = isSelfHosted()
+    ? Number.MAX_SAFE_INTEGER
+    : fixedQuota || DEFAULT_STORAGE_QUOTA[plan] || DEFAULT_STORAGE_QUOTA['free'];
   const quota = planQuota + purchasedQuota;
 
   return {
@@ -207,6 +210,9 @@ export const getTranslationQuota = (plan: UserPlan): number => {
   const runtimeConfig = getRuntimeConfig();
   const fixedQuota =
     runtimeConfig?.translationFixedQuota ?? parseInt(process.env['TRANSLATION_FIXED_QUOTA'] ?? '0');
+  // Paywall removed: self-hosted deployments get an effectively unlimited
+  // daily translation quota regardless of the JWT plan claim.
+  if (isSelfHosted()) return Number.MAX_SAFE_INTEGER;
   return (
     fixedQuota || DEFAULT_DAILY_TRANSLATION_QUOTA[plan] || DEFAULT_DAILY_TRANSLATION_QUOTA['free']
   );

@@ -4,7 +4,7 @@ import { useAppRouter } from '@/hooks/useAppRouter';
 import { useQuotaStats } from '@/hooks/useQuotaStats';
 import { useTranslation } from '@/hooks/useTranslation';
 import { transferManager } from '@/services/transferManager';
-import { isAbsOfflineAllowed } from '@/utils/access';
+import { isAbsOfflineAllowed, isSelfHosted } from '@/utils/access';
 import { navigateToLogin, navigateToProfile } from '@/utils/nav';
 import type { Book } from '@/types/book';
 
@@ -19,10 +19,12 @@ export const useAbsOfflineDownload = () => {
   const { user } = useAuth();
   const { userProfilePlan, customizationPurchased } = useQuotaStats();
   const entitled = isAbsOfflineAllowed(userProfilePlan ?? 'free', customizationPurchased);
-  // Only badge users who can't use it yet: signed out, or a resolved plan
-  // without the feature — never an entitled user whose plan is still loading.
-  const offlinePremiumLabel =
-    !entitled && (!user || userProfilePlan !== undefined) ? _('Premium') : undefined;
+  // Paywall removed: self-hosted builds never show the premium badge.
+  const offlinePremiumLabel = isSelfHosted()
+    ? undefined
+    : !entitled && (!user || userProfilePlan !== undefined)
+      ? _('Premium')
+      : undefined;
 
   const handleBookOfflineDownload = useCallback(
     (book: Book) => {

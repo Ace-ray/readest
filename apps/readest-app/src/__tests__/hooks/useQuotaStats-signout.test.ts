@@ -23,6 +23,7 @@ vi.mock('@/utils/access', () => ({
   getTranslationPlanData: () => ({ plan: 'free', usage: 0, quota: 1000 }),
   getUserProfilePlan: () => 'purchase',
   getCustomizationPurchased: () => true,
+  isSelfHosted: () => true,
 }));
 
 import { useQuotaStats } from '@/hooks/useQuotaStats';

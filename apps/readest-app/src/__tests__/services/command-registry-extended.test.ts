@@ -62,7 +62,6 @@ function createMockOptions(
     reloadPage: vi.fn(),
     toggleOpenLastBooks: vi.fn(),
     showAbout: vi.fn(),
-    toggleTelemetry: vi.fn(),
     isDesktop: false,
     ...overrides,
   };

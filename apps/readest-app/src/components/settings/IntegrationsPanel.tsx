@@ -32,7 +32,7 @@ import { useFileSyncStore } from '@/store/fileSyncStore';
 import { useLocalSendStore } from '@/store/localsendStore';
 import { CatalogManager } from '@/app/opds/components/CatalogManager';
 import { saveSysSettings } from '@/helpers/settings';
-import { isCloudSyncAllowed } from '@/utils/access';
+import { isCloudSyncAllowed, isSelfHosted } from '@/utils/access';
 import { isTauriAppPlatform, isWebAppPlatform } from '@/services/environment';
 import { getLocalSendAlias, isLocalSendEnabled } from '@/services/localsend/devicePrefs';
 import { getGoogleWebClientId } from '@/services/sync/providers/gdrive/buildGoogleDriveProvider';
@@ -142,14 +142,17 @@ const IntegrationsPanel: React.FC = () => {
   // returns true for every plan until `CLOUD_SYNC_REQUIRES_PREMIUM` is flipped
   // back on. The `?? 'free'` keeps the (re-gated) loading state non-premium.
   const { userProfilePlan, customizationPurchased } = useQuotaStats();
+  // Paywall removed: self-hosted builds never show the premium badge.
   const isCloudSyncPremium = isCloudSyncAllowed(userProfilePlan ?? 'free', customizationPurchased);
-  const premiumBadge = shouldShowCloudProviderBadge({
-    signedIn: !!user,
-    planLoading: userProfilePlan === undefined,
-    isPremium: isCloudSyncPremium,
-  })
-    ? _('Premium')
-    : undefined;
+  const premiumBadge = isSelfHosted()
+    ? undefined
+    : shouldShowCloudProviderBadge({
+        signedIn: !!user,
+        planLoading: userProfilePlan === undefined,
+        isPremium: isCloudSyncPremium,
+      })
+      ? _('Premium')
+      : undefined;
 
   const [subPage, setSubPage] = useState<SubPage>(null);
 
@@ -205,7 +208,8 @@ const IntegrationsPanel: React.FC = () => {
       requestedSubPage === 'cloudsync';
     // Cloud-sync sub-pages are premium-gated. If the plan is still loading, wait
     // (don't consume the request); once known, only honor it for paid plans.
-    if (isCloudRequest && !isCloudSyncPremium) {
+    // Paywall removed: self-hosted builds skip the gate entirely.
+    if (isCloudRequest && !isSelfHosted() && !isCloudSyncPremium) {
       if (userProfilePlan === undefined) return;
       setRequestedSubPage(null);
       return;

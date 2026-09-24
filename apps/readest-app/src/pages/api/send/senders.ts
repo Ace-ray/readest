@@ -6,6 +6,7 @@ import {
   getCustomizationPurchased,
   getUserProfilePlan,
   isEmailInPlan,
+  isSelfHosted,
   validateUserAndToken,
 } from '@/utils/access';
 import { normalizeSenderEmail } from '@/services/send/sendAddress';
@@ -32,14 +33,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   // Sender allowlist only matters for the email-in channel — gate it too.
-  const plan = getUserProfilePlan(token);
-  if (!isEmailInPlan(plan, getCustomizationPurchased(token))) {
-    return res.status(403).json({
-      error: 'Email-in is available on the Plus, Pro, and Lifetime plans',
-      code: 'plan_required',
-      plan,
-      requiredPlans: EMAIL_IN_PLANS,
-    });
+  // Paywall removed: self-hosted deployments skip the plan check.
+  if (!isSelfHosted()) {
+    const plan = getUserProfilePlan(token);
+    if (!isEmailInPlan(plan, getCustomizationPurchased(token))) {
+      return res.status(403).json({
+        error: 'Email-in is available on the Plus, Pro, and Lifetime plans',
+        code: 'plan_required',
+        plan,
+        requiredPlans: EMAIL_IN_PLANS,
+      });
+    }
   }
 
   const supabase = createSupabaseAdminClient();

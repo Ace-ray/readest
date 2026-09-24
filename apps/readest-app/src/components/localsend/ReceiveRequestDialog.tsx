@@ -7,7 +7,7 @@ import { useThemeStore } from '@/store/themeStore';
 import { partitionSupportedFiles } from '@/services/localsend/formats';
 import { previewDataUrl } from '@/services/localsend/preview';
 import type { ReceiveRequest } from '@/services/localsend/types';
-import { isNearbyPairingAllowed } from '@/utils/access';
+import { isNearbyPairingAllowed, isSelfHosted } from '@/utils/access';
 import { formatBytes } from '@/utils/book';
 import { navigateToLogin, navigateToProfile } from '@/utils/nav';
 import Alert from '@/components/Alert';
@@ -62,8 +62,10 @@ const ReceiveRequestDialog: React.FC<ReceiveRequestDialogProps> = ({
   const { userProfilePlan, customizationPurchased } = useQuotaStats();
   const pairingEntitled = isNearbyPairingAllowed(userProfilePlan ?? 'free', customizationPurchased);
   const canPair = request.sender.certVerified && pairingEntitled;
-  const pairLocked =
-    request.sender.certVerified && !pairingEntitled && (!user || userProfilePlan !== undefined);
+  // Paywall removed: self-hosted builds never show the pairing lock.
+  const pairLocked = isSelfHosted()
+    ? false
+    : request.sender.certVerified && !pairingEntitled && (!user || userProfilePlan !== undefined);
 
   const openUpgrade = () => {
     if (user) {
