@@ -1,0 +1,86 @@
+name: Android arm64 APK
+
+# One sideload APK for arm64 devices (Dimensity 9400 and other aarch64 phones).
+# Manual only: the full release matrix stays in release.yml.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: setup node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: setup Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - name: setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+
+      - name: install NDK
+        run: sdkmanager "ndk;28.2.13676358"
+
+      - name: install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: copy pdfjs-dist and simplecc-dist to public directory
+        run: pnpm --filter @readest/readest-app setup-vendors
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: ubuntu-android-aarch64-cargo
+
+      - name: build arm64 APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          set -euo pipefail
+          cd apps/readest-app
+          version=$(node -p "require('./package.json').version")
+          rm -rf src-tauri/gen/android
+          pnpm tauri android init
+          pnpm tauri icon ../../data/icons/readest-book.png
+          git checkout .
+          pushd src-tauri/gen/android
+          echo "keyAlias=readest" > keystore.properties
+          echo "password=readest" >> keystore.properties
+          keytool -genkeypair -keystore "$RUNNER_TEMP/keystore.jks" -storepass readest -keypass readest \
+            -alias readest -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Readest Fork, OU=Readest, O=Readest, L=NA, ST=NA, C=US"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          popd
+          pnpm tauri android build --target aarch64
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" "Readest_${version}_arm64.apk"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Readest-arm64-apk
+          path: apps/readest-app/Readest_*_arm64.apk
+          if-no-files-found: error

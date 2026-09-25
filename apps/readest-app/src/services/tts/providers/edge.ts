@@ -57,20 +57,26 @@ export class EdgeSpeechProvider implements SpeechProvider {
 
   async synthesize(
     req: SpeechSynthesisRequest,
-    _signal: AbortSignal,
+    signal: AbortSignal,
   ): Promise<SpeechSynthesisResult> {
     const tts = this.#tts;
     if (!tts) throw new Error('EdgeSpeechProvider not initialized');
+    if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     try {
       // Rate pinned to 1.0: keeps the audio cache rate-independent; the
-      // playback rate is applied at playout.
-      const { data, boundaries } = await tts.createAudioData({
-        lang: req.lang,
-        text: req.text,
-        voice: req.voice,
-        rate: 1.0,
-        pitch: req.pitch,
-      });
+      // playback rate is applied at playout. The signal is forwarded so a
+      // cancelled download closes the socket instead of waiting out the
+      // inactivity timeout.
+      const { data, boundaries } = await tts.createAudioData(
+        {
+          lang: req.lang,
+          text: req.text,
+          voice: req.voice,
+          rate: 1.0,
+          pitch: req.pitch,
+        },
+        signal,
+      );
       return { audio: data, boundaries };
     } catch (err) {
       // Permanent for this sentence: Edge answered without audio frames.

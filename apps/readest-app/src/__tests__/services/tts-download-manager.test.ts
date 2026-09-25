@@ -122,7 +122,7 @@ describe('TTSDownloadManager', () => {
     let calls = 0;
     downloader.download.mockImplementation(async (sections: number[]) => {
       calls++;
-      if (calls === 1) throw new Error('offline');
+      if (calls <= 2) throw new Error('offline');
       for (const section of sections) packed.add(section);
       return { completed: [...sections], skipped: [], synthesized: 0 };
     });
@@ -134,7 +134,7 @@ describe('TTSDownloadManager', () => {
       expect(useTTSDownloadStore.getState().itemForChapter('book', 'a')?.status).toBe('failed'),
     );
     manager.queueChapter('book', chapter('a', 0, 1));
-    await vi.waitFor(() => expect(downloader.download).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(downloader.download).toHaveBeenCalledTimes(3));
     await vi.waitFor(() =>
       expect(useTTSDownloadStore.getState().itemForChapter('book', 'a')).toBeUndefined(),
     );
@@ -398,10 +398,47 @@ describe('TTSDownloadManager', () => {
     manager.attachController('book', () => controller);
     manager.queueChapter('book', chapter('a', 0, 1));
 
+    await vi.waitFor(() => expect(downloader.download).toHaveBeenCalledTimes(2));
     await vi.waitFor(() =>
       expect(useTTSDownloadStore.getState().itemForChapter('book', 'a')?.status).toBe('failed'),
     );
     expect(cancelDownloadSections).toHaveBeenCalledWith([0]);
+  });
+
+  test('retries an incomplete chapter once before leaving it failed', async () => {
+    const { downloader, controller, packed } = makeController();
+    let calls = 0;
+    downloader.download.mockImplementation(async (sections: number[]) => {
+      calls++;
+      if (calls === 1) {
+        return { completed: [], skipped: [...sections], synthesized: 0 };
+      }
+      for (const section of sections) packed.add(section);
+      return { completed: [...sections], skipped: [], synthesized: 0 };
+    });
+    const manager = new TTSDownloadManager();
+    manager.attachController('book', () => controller);
+    manager.queueChapter('book', chapter('a', 0, 1));
+
+    await vi.waitFor(() => expect(downloader.download).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(useTTSDownloadStore.getState().itemForChapter('book', 'a')).toBeUndefined(),
+    );
+  });
+
+  test('stops automatic retries after the second incomplete attempt', async () => {
+    const { downloader, controller } = makeController();
+    downloader.download.mockResolvedValue({ completed: [], skipped: [0], synthesized: 0 });
+    const manager = new TTSDownloadManager();
+    manager.attachController('book', () => controller);
+    manager.queueChapter('book', chapter('a', 0, 1));
+
+    await vi.waitFor(() => expect(downloader.download).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(useTTSDownloadStore.getState().itemForChapter('book', 'a')?.status).toBe('failed'),
+    );
+    await Promise.resolve();
+    expect(downloader.download).toHaveBeenCalledTimes(2);
   });
 
   test('repairs a pinned section whose durable pack is missing', async () => {

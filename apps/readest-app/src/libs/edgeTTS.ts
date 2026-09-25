@@ -376,7 +376,10 @@ export class EdgeSpeechTTS {
     }
   }
 
-  async #fetchEdgeSpeechHttp({ lang, text, voice, rate }: EdgeTTSPayload): Promise<Response> {
+  async #fetchEdgeSpeechHttp(
+    { lang, text, voice, rate }: EdgeTTSPayload,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     const url = getAPIBaseUrl() + '/tts/edge';
 
     const response = await fetchWithAuth(url, {
@@ -390,6 +393,7 @@ export class EdgeSpeechTTS {
         rate,
         lang,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -399,7 +403,10 @@ export class EdgeSpeechTTS {
     return response;
   }
 
-  async #fetchEdgeSpeechWs({ lang, text, voice, rate }: EdgeTTSPayload): Promise<EdgeSpeechAudio> {
+  async #fetchEdgeSpeechWs(
+    { lang, text, voice, rate }: EdgeTTSPayload,
+    signal?: AbortSignal,
+  ): Promise<EdgeSpeechAudio> {
     const connectId = randomMd5();
     const params = new URLSearchParams({
       ConnectionId: connectId,
@@ -485,14 +492,16 @@ export class EdgeSpeechTTS {
       // error as a bare string (no `type` field) — ignoring them left the
       // promise pending forever, wedging the whole speak pipeline (and the
       // static inflight map poisoned that sentence until app restart).
-      return new Promise(async (resolve, reject) => {
+      const { promise, resolve, reject } = Promise.withResolvers<EdgeSpeechAudio>();
+      void (async () => {
         let ws: TauriWebSocketConnection | null = null;
         let settled = false;
         let unlisten: (() => void) | null = null;
-        let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+        let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
         const cleanup = () => {
-          if (inactivityTimer !== null) clearTimeout(inactivityTimer);
-          inactivityTimer = null;
+          clearTimeout(inactivityTimer);
+          inactivityTimer = undefined;
+          signal?.removeEventListener('abort', onAbort);
           unlisten?.();
           unlisten = null;
           void ws?.disconnect().catch(() => {});
@@ -503,16 +512,24 @@ export class EdgeSpeechTTS {
           cleanup();
           complete();
         };
+        const onAbort = () => {
+          settle(() => reject(new DOMException('The operation was aborted.', 'AbortError')));
+        };
         // Frames stream steadily during synthesis, so prolonged silence means
         // a half-open socket (e.g. a mobile network handover) that will never
         // error or close on its own. Reject so the caller's retry can open a
         // fresh connection.
         const armInactivityTimer = () => {
-          if (inactivityTimer !== null) clearTimeout(inactivityTimer);
+          clearTimeout(inactivityTimer);
           inactivityTimer = setTimeout(() => {
             settle(() => reject(new Error('WebSocket timed out waiting for audio.')));
           }, WS_INACTIVITY_TIMEOUT_MS);
         };
+        if (signal?.aborted) {
+          settle(() => reject(new DOMException('The operation was aborted.', 'AbortError')));
+          return;
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
         try {
           const TauriWebSocket = (await import('@tauri-apps/plugin-websocket')).default;
           ws = await TauriWebSocket.connect(url, { headers: baseHeaders });
@@ -563,7 +580,8 @@ export class EdgeSpeechTTS {
         } catch (error) {
           settle(() => reject(new Error(`WebSocket error occurred: ${error}`)));
         }
-      });
+      })();
+      return promise;
     } else if (isCloudflareWorkers()) {
       // The Workers path backs the HTTPS proxy route. It captures both the
       // audio body and the word boundaries (audio.metadata frames) so the
@@ -709,91 +727,138 @@ export class EdgeSpeechTTS {
         })();
       });
     } else {
-      return new Promise((resolve, reject) => {
-        // In browsers isomorphic-ws is the native WebSocket, whose second
-        // argument is a subprotocol list — passing an options object throws
-        // SyntaxError. Custom headers are only supported (and only needed)
-        // in Node, where `ws` accepts (url, options).
-        const ws =
-          typeof window === 'undefined'
-            ? new WebSocket(url, { headers: baseHeaders })
-            : new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
+      const { promise, resolve, reject } = Promise.withResolvers<EdgeSpeechAudio>();
+      // In browsers isomorphic-ws is the native WebSocket, whose second
+      // argument is a subprotocol list — passing an options object throws
+      // SyntaxError. Custom headers are only supported (and only needed)
+      // in Node, where `ws` accepts (url, options).
+      const ws =
+        typeof window === 'undefined'
+          ? new WebSocket(url, { headers: baseHeaders })
+          : new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
 
-        let audioData = new ArrayBuffer(0);
-        const boundaries: TTSWordBoundary[] = [];
+      let audioData = new ArrayBuffer(0);
+      const boundaries: TTSWordBoundary[] = [];
+      let settled = false;
+      let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (complete: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(inactivityTimer);
+        inactivityTimer = undefined;
+        signal?.removeEventListener('abort', onAbort);
+        complete();
+      };
+      const onAbort = () => {
+        ws.close();
+        settle(() => reject(new DOMException('The operation was aborted.', 'AbortError')));
+      };
+      const armInactivityTimer = () => {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => {
+          ws.close();
+          settle(() => reject(new Error('WebSocket timed out waiting for audio.')));
+        }, WS_INACTIVITY_TIMEOUT_MS);
+      };
+      if (signal?.aborted) {
+        ws.close();
+        settle(() => reject(new DOMException('The operation was aborted.', 'AbortError')));
+        return promise;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      armInactivityTimer();
 
-        ws.addEventListener('open', () => {
-          ws.send(config);
-          ws.send(content);
-        });
+      ws.addEventListener('open', () => {
+        if (settled) return;
+        armInactivityTimer();
+        ws.send(config);
+        ws.send(content);
+      });
 
-        ws.addEventListener('message', (event: WebSocket.MessageEvent) => {
-          if (typeof event.data === 'string') {
-            const { headers, body } = getHeadersAndData(event.data);
-            if (headers['Path'] === 'audio.metadata') {
-              boundaries.push(...parseAudioMetadataBody(body.trim()));
-            } else if (headers['Path'] === 'turn.end') {
-              ws.close();
+      ws.addEventListener('message', (event: WebSocket.MessageEvent) => {
+        if (settled) return;
+        armInactivityTimer();
+        if (typeof event.data === 'string') {
+          const { headers, body } = getHeadersAndData(event.data);
+          if (headers['Path'] === 'audio.metadata') {
+            boundaries.push(...parseAudioMetadataBody(body.trim()));
+          } else if (headers['Path'] === 'turn.end') {
+            settle(() => {
               if (!audioData.byteLength) {
-                return reject(new Error('No audio data received.'));
+                reject(new Error('No audio data received.'));
+                return;
               }
               resolve({ response: new Response(audioData), boundaries });
-            }
-          } else if (event.data instanceof ArrayBuffer) {
-            const dataView = new DataView(event.data);
-            const headerLength = dataView.getInt16(0);
-            if (event.data.byteLength > headerLength + 2) {
-              const newBody = event.data.slice(2 + headerLength);
-              const merged = new Uint8Array(audioData.byteLength + newBody.byteLength);
-              merged.set(new Uint8Array(audioData), 0);
-              merged.set(new Uint8Array(newBody), audioData.byteLength);
-              audioData = merged.buffer;
-            }
+            });
+            ws.close();
           }
-        });
+        } else if (event.data instanceof ArrayBuffer) {
+          const dataView = new DataView(event.data);
+          const headerLength = dataView.getInt16(0);
+          if (event.data.byteLength > headerLength + 2) {
+            const newBody = event.data.slice(2 + headerLength);
+            const merged = new Uint8Array(audioData.byteLength + newBody.byteLength);
+            merged.set(new Uint8Array(audioData), 0);
+            merged.set(new Uint8Array(newBody), audioData.byteLength);
+            audioData = merged.buffer;
+          }
+        }
+      });
 
-        ws.addEventListener('close', () => {
+      ws.addEventListener('close', () => {
+        // A close after turn.end already settled. A close with no audio, or
+        // a close that drops a partial body, must reject: leaving the
+        // promise pending wedges the download on that sentence.
+        settle(() => {
           if (!audioData.byteLength) {
             reject(new Error('No audio data received.'));
+            return;
           }
-        });
-
-        ws.addEventListener('error', () => {
-          reject(new Error('WebSocket error occurred.'));
+          reject(new Error('WebSocket closed before audio completed.'));
         });
       });
+
+      ws.addEventListener('error', () => {
+        ws.close();
+        settle(() => reject(new Error('WebSocket error occurred.')));
+      });
+      return promise;
     }
   }
 
-  async #fetchEdgeSpeech(payload: EdgeTTSPayload): Promise<EdgeSpeechAudio> {
+  async #fetchEdgeSpeech(payload: EdgeTTSPayload, signal?: AbortSignal): Promise<EdgeSpeechAudio> {
     if (this.protocol === 'https') {
       // The HTTPS proxy streams the audio body and carries word boundaries in
       // the WORD_BOUNDARIES_HEADER response header (see /api/tts/edge route).
-      const response = await this.#fetchEdgeSpeechHttp(payload);
+      const response = await this.#fetchEdgeSpeechHttp(payload, signal);
       return {
         response,
         boundaries: parseWordBoundariesHeader(response.headers.get(WORD_BOUNDARIES_HEADER)),
       };
     } else {
-      return this.#fetchEdgeSpeechWs(payload);
+      return this.#fetchEdgeSpeechWs(payload, signal);
     }
   }
 
-  async create(payload: EdgeTTSPayload): Promise<Response> {
-    return (await this.#fetchEdgeSpeech(payload)).response;
+  async create(payload: EdgeTTSPayload, signal?: AbortSignal): Promise<Response> {
+    return (await this.#fetchEdgeSpeech(payload, signal)).response;
   }
 
   // Server-side helper for the /api/tts/edge route: returns the audio Response
   // together with the captured word boundaries so the route can forward them.
-  async createWithBoundaries(payload: EdgeTTSPayload): Promise<EdgeSpeechAudio> {
-    return this.#fetchEdgeSpeech(payload);
+  async createWithBoundaries(
+    payload: EdgeTTSPayload,
+    signal?: AbortSignal,
+  ): Promise<EdgeSpeechAudio> {
+    return this.#fetchEdgeSpeech(payload, signal);
   }
 
   // Fetch (or reuse) the audio blob + boundaries for a payload, deduplicating
   // both stored results (LRU) and in-flight requests (inflight map).
   async #fetchAndCache(
     payload: EdgeTTSPayload,
+    signal?: AbortSignal,
   ): Promise<{ blob: Blob; boundaries: TTSWordBoundary[] }> {
     const cacheKey = hashTTSPayload(payload);
     const cachedBlob = EdgeSpeechTTS.audioCache.get(cacheKey);
@@ -803,7 +868,7 @@ export class EdgeSpeechTTS {
     const pending = EdgeSpeechTTS.inflight.get(cacheKey);
     if (pending) return pending;
     const promise = (async () => {
-      const { response, boundaries } = await this.#fetchEdgeSpeech(payload);
+      const { response, boundaries } = await this.#fetchEdgeSpeech(payload, signal);
       const arrayBuffer = await response.arrayBuffer();
       const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
       EdgeSpeechTTS.audioCache.set(cacheKey, blob);
@@ -824,8 +889,9 @@ export class EdgeSpeechTTS {
   // break replay from cache on Safari.
   async createAudioData(
     payload: EdgeTTSPayload,
+    signal?: AbortSignal,
   ): Promise<{ data: ArrayBuffer; boundaries: TTSWordBoundary[] }> {
-    const { blob, boundaries } = await this.#fetchAndCache(payload);
+    const { blob, boundaries } = await this.#fetchAndCache(payload, signal);
     return { data: await blob.arrayBuffer(), boundaries };
   }
 }

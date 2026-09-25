@@ -35,6 +35,9 @@ interface ActiveDownload {
   resolveSettled: () => void;
   finalizing?: Promise<void>;
   cleanup?: Promise<void>;
+  // Set once downloader.download is entered. Pin failures happen before this
+  // and stay failed; a throw during synthesis gets one automatic retry.
+  synthesisStarted: boolean;
 }
 
 export class TTSDownloadManager {
@@ -43,7 +46,11 @@ export class TTSDownloadManager {
   #unsettledDownloads = new Map<string, Set<ActiveDownload>>();
   #isProcessing = false;
   #loaded = false;
-
+  // One automatic retry per queue row. A transient Edge failure used to leave
+  // the chapter failed until the user tapped it again; a second pass reuses
+  // sentences already cached. User cancellation deletes the row, so it never
+  // counts as a retry.
+  #autoRetries = new Map<string, number>();
   // Bind a book to the session that can download for it. `getController` is
   // re-read per item so a stale closure never outlives the session.
   attachController(bookHash: string, getController: () => TTSController | null): void {
@@ -68,7 +75,8 @@ export class TTSDownloadManager {
     const existing = store.itemForChapter(bookHash, chapter.key);
     if (existing?.status === 'pending' || existing?.status === 'in_progress') return false;
     if (existing?.status === 'failed') {
-      // Retry: back to pending, progress starts over.
+      // Manual retry: back to pending, and the automatic budget starts over.
+      this.#autoRetries.delete(existing.id);
       store.removeItem(existing.id);
     }
     store.enqueue(chapter, bookHash, priority);
@@ -97,6 +105,7 @@ export class TTSDownloadManager {
     // Removing the attempt before the row makes every late callback from that
     // attempt inert, even if the same deterministic row ID is queued again.
     this.#activeDownloads.delete(id);
+    this.#autoRetries.delete(id);
     if (active) void this.#cancelActive(active);
     useTTSDownloadStore.getState().removeItem(id);
     this.persist();
@@ -116,6 +125,7 @@ export class TTSDownloadManager {
       void this.#cancelActive(active);
     }
     for (const item of store.itemsForBook(bookHash)) {
+      this.#autoRetries.delete(item.id);
       store.removeItem(item.id);
     }
     this.persist();
@@ -204,6 +214,7 @@ export class TTSDownloadManager {
         pinReady: controller.beginDownloadSections(sections),
         settled,
         resolveSettled,
+        synthesisStarted: false,
       };
       const unsettled = this.#unsettledDownloads.get(item.bookHash) ?? new Set();
       unsettled.add(active);
@@ -243,6 +254,7 @@ export class TTSDownloadManager {
         store.updateProgress(item.id, baseDone + progress.done, baseTotal + progress.total);
       };
 
+      active.synthesisStarted = true;
       await downloader.download(sections, onProgress, active.abortController.signal);
 
       if (!isCurrent()) {
@@ -265,6 +277,7 @@ export class TTSDownloadManager {
             ` incompleteSections=[${sections.filter((s) => !finalStatuses.get(s)?.packed).join(',')}]`,
         );
         await this.#cancelActive(active);
+        if (this.#scheduleRetry(item.id)) return true;
         finish('Download incomplete');
       } else {
         active.finalizing = controller.completeDownloadSections(sections);
@@ -273,6 +286,7 @@ export class TTSDownloadManager {
           await this.#cancelActive(active);
           return true;
         }
+        this.#autoRetries.delete(item.id);
         finish();
       }
     } catch (err) {
@@ -280,6 +294,10 @@ export class TTSDownloadManager {
         await this.#cancelActive(active);
         if (this.#activeDownloads.get(item.id) !== active) return true;
         this.#activeDownloads.delete(item.id);
+        // A pin that never starts has not synthesized anything worth retrying
+        // immediately; the user can requeue it. A throw after synthesis starts
+        // gets the one automatic pass.
+        if (active.synthesisStarted && this.#scheduleRetry(item.id)) return true;
         store.setFailed(item.id, err instanceof Error ? err.message : String(err));
         this.persist();
       } else if (useTTSDownloadStore.getState().items[item.id] === current) {
@@ -294,6 +312,18 @@ export class TTSDownloadManager {
         active.resolveSettled();
       }
     }
+    return true;
+  }
+
+  // Put the same row back to pending once. Returns false when this id already
+  // used its automatic retry, or the row was cancelled while synthesis unwound.
+  #scheduleRetry(id: string): boolean {
+    if ((this.#autoRetries.get(id) ?? 0) >= 1) return false;
+    const row = useTTSDownloadStore.getState().items[id];
+    if (!row) return false;
+    this.#autoRetries.set(id, 1);
+    useTTSDownloadStore.getState().requeue(id);
+    this.persist();
     return true;
   }
 

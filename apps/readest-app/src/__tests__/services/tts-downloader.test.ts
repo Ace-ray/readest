@@ -87,8 +87,8 @@ describe('TTSDownloader', () => {
     warmFails.add('bad');
     const downloader = new TTSDownloader(enumerator, warmer);
     const result = await downloader.download([0]);
-    // All three were attempted; two succeeded.
-    expect(warmer.warmed).toHaveLength(3);
+    // The two good sentences once, and the failed one again on the retry pass.
+    expect(warmer.warmed).toHaveLength(4);
     expect(result.synthesized).toBe(2);
     // A section with a failed sentence is reported skipped, not completed: the
     // manifest gap means it has not fully downloaded.
@@ -121,5 +121,59 @@ describe('TTSDownloader', () => {
     expect(warmer.warmed.map((w) => w.section)).toEqual([0]);
     expect(result.completed).not.toContain(1);
     expect(enumerator.enumerateSection).not.toHaveBeenCalledWith(1);
+  });
+
+  test('keeps a window of warmSentence calls in flight and commits progress in order', async () => {
+    enumerated[0] = [sentence(0, 'a'), sentence(1, 'b'), sentence(2, 'c'), sentence(3, 'd')];
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let started = 0;
+    warmer.warmSentence = vi.fn().mockImplementation(async (section, ordinal, _lang, text) => {
+      started++;
+      if (text === 'a') await first;
+      warmer.warmed.push({ section, ordinal, text });
+      return true;
+    });
+    const downloader = new TTSDownloader(enumerator, warmer, 4);
+    const progress: string[] = [];
+    const pending = downloader.download([0], (p) => progress.push(`${p.done}/${p.total}`));
+    await vi.waitFor(() => expect(started).toBe(4));
+    expect(progress).toEqual([]);
+    releaseFirst();
+    const result = await pending;
+    expect(warmer.warmed.map((w) => w.text).sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(progress).toEqual(['1/4', '2/4', '3/4', '4/4']);
+    expect(result.completed).toEqual([0]);
+    expect(result.synthesized).toBe(4);
+  });
+
+  test('retries a failed sentence once before skipping the section', async () => {
+    enumerated[0] = [sentence(0, 'a'), sentence(1, 'bad')];
+    const attempts = new Map<string, number>();
+    warmer.warmSentence = vi.fn().mockImplementation(async (section, ordinal, _lang, text) => {
+      const n = (attempts.get(text) ?? 0) + 1;
+      attempts.set(text, n);
+      warmer.warmed.push({ section, ordinal, text });
+      return text !== 'bad' || n > 1;
+    });
+    const downloader = new TTSDownloader(enumerator, warmer, 2);
+    const result = await downloader.download([0]);
+    expect(attempts.get('bad')).toBe(2);
+    expect(result.completed).toEqual([0]);
+    expect(result.skipped).toEqual([]);
+    expect(result.synthesized).toBe(2);
+  });
+
+  test('a sentence that fails twice still skips the section', async () => {
+    enumerated[0] = [sentence(0, 'bad')];
+    warmFails.add('bad');
+    const downloader = new TTSDownloader(enumerator, warmer, 1);
+    const result = await downloader.download([0]);
+    expect(warmer.warmed).toHaveLength(2);
+    expect(result.completed).toEqual([]);
+    expect(result.skipped).toEqual([0]);
+    expect(result.synthesized).toBe(0);
   });
 });

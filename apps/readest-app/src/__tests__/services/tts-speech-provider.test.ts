@@ -80,6 +80,16 @@ describe('EdgeSpeechProvider', () => {
     );
   });
 
+  test('forwards the abort signal to the Edge transport', async () => {
+    const provider = await initializedProvider();
+    const controller = new AbortController();
+    await provider.synthesize(
+      { lang: 'en', text: 'hello', voice: 'en-US-AriaNeural', pitch: 1.0 },
+      controller.signal,
+    );
+    expect(h.createAudioData).toHaveBeenCalledWith(expect.any(Object), controller.signal);
+  });
+
   test('synthesize returns audio bytes and boundaries', async () => {
     const provider = await initializedProvider();
     const result = await provider.synthesize(

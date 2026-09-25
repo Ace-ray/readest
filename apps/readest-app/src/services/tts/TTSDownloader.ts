@@ -64,10 +64,16 @@ export interface DownloadResult {
 export class TTSDownloader {
   #enumerator: SectionEnumerator;
   #warmer: CacheWarmer;
+  // How many sentences may be in flight at once. Each one is its own Edge
+  // request; a window of 1 is the old sentence-at-a-time download. Results
+  // are still committed in reading order so progress and pack manifests stay
+  // sequential even when a later sentence returns first.
+  #concurrency: number;
 
-  constructor(enumerator: SectionEnumerator, warmer: CacheWarmer) {
+  constructor(enumerator: SectionEnumerator, warmer: CacheWarmer, concurrency = 4) {
     this.#enumerator = enumerator;
     this.#warmer = warmer;
+    this.#concurrency = Math.max(1, concurrency);
   }
 
   async download(
@@ -93,36 +99,96 @@ export class TTSDownloader {
         sentences.map((s) => s.label),
       );
 
-      let synthesized = 0;
-      let failed = false;
-      let aborted = false;
-      for (let done = 0; done < sentences.length; done++) {
-        if (signal?.aborted) {
-          aborted = true;
-          break;
-        }
-        const s = sentences[done]!;
-        const ok = await this.#warmer.warmSentence(sectionIndex, s.ordinal, s.lang, s.text, signal);
-        if (ok) synthesized++;
-        else failed = true;
-        onProgress?.({
-          sectionIndex,
-          total: sentences.length,
-          done: done + 1,
-          synthesized,
-        });
-      }
-
+      const outcome = await this.#warmSection(sectionIndex, sentences, onProgress, signal);
+      synthesizedTotal += outcome.synthesized;
       // Compact whatever completed. A section left partial by an abort or an
       // offline miss simply will not form a pack until the gap fills on a
       // later run; compacting is still safe and cheap.
       await this.#warmer.compactCache();
-      synthesizedTotal += synthesized;
-      if (aborted) break;
-      if (failed) skipped.push(sectionIndex);
+      if (outcome.aborted) break;
+      if (outcome.failed) skipped.push(sectionIndex);
       else completed.push(sectionIndex);
     }
 
     return { completed, skipped, synthesized: synthesizedTotal };
+  }
+
+  // Launch up to `#concurrency` warmSentence calls, then commit them in
+  // ordinal order. A failed sentence is retried once after the first pass:
+  // Edge drops sockets often enough that one blip used to fail the chapter,
+  // while a second pass usually hits a fresh connection (or the cache).
+  async #warmSection(
+    sectionIndex: number,
+    sentences: DownloadableSentence[],
+    onProgress?: (progress: SectionDownloadProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<{ synthesized: number; failed: boolean; aborted: boolean }> {
+    const results: Array<'ok' | 'fail' | 'pending'> = sentences.map(() => 'pending');
+    let next = 0;
+    let committed = 0;
+    let synthesized = 0;
+    let aborted = false;
+
+    const commitReady = () => {
+      while (committed < results.length && results[committed] !== 'pending') {
+        if (results[committed] === 'ok') synthesized++;
+        committed++;
+        onProgress?.({
+          sectionIndex,
+          total: sentences.length,
+          done: committed,
+          synthesized,
+        });
+      }
+    };
+
+    const worker = async () => {
+      for (;;) {
+        if (signal?.aborted) {
+          aborted = true;
+          return;
+        }
+        const index = next++;
+        if (index >= sentences.length) return;
+        const sentence = sentences[index]!;
+        const ok = await this.#warmer.warmSentence(
+          sectionIndex,
+          sentence.ordinal,
+          sentence.lang,
+          sentence.text,
+          signal,
+        );
+        if (signal?.aborted) {
+          aborted = true;
+          return;
+        }
+        results[index] = ok ? 'ok' : 'fail';
+        commitReady();
+      }
+    };
+
+    const workers = Math.min(this.#concurrency, Math.max(1, sentences.length));
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    if (aborted || signal?.aborted) {
+      return { synthesized, failed: true, aborted: true };
+    }
+
+    for (let index = 0; index < results.length; index++) {
+      if (results[index] !== 'fail') continue;
+      if (signal?.aborted) return { synthesized, failed: true, aborted: true };
+      const sentence = sentences[index]!;
+      const ok = await this.#warmer.warmSentence(
+        sectionIndex,
+        sentence.ordinal,
+        sentence.lang,
+        sentence.text,
+        signal,
+      );
+      if (signal?.aborted) return { synthesized, failed: true, aborted: true };
+      if (ok) synthesized++;
+      results[index] = ok ? 'ok' : 'fail';
+    }
+
+    return { synthesized, failed: results.some((ok) => ok !== 'ok'), aborted: false };
   }
 }

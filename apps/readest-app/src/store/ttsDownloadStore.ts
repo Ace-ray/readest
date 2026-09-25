@@ -42,6 +42,8 @@ interface TTSDownloadState {
   setInProgress: (id: string) => void;
   updateProgress: (id: string, done: number, total: number) => void;
   setFailed: (id: string, error?: string) => void;
+  // Same row, back to pending, keeping its place in the priority bucket.
+  requeue: (id: string) => void;
 
   itemsForBook: (bookHash: string) => TTSDownloadItem[];
   itemForChapter: (bookHash: string, chapterKey: string) => TTSDownloadItem | undefined;
@@ -111,6 +113,19 @@ export const useTTSDownloadStore = create<TTSDownloadState>((set, get) => ({
         items: {
           ...state.items,
           [id]: { ...item, status: 'failed', error },
+        },
+      };
+    });
+  },
+
+  requeue: (id) => {
+    set((state) => {
+      const item = state.items[id];
+      if (!item) return state;
+      return {
+        items: {
+          ...state.items,
+          [id]: { ...item, status: 'pending', done: 0, total: 0, error: undefined },
         },
       };
     });
