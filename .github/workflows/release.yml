@@ -463,9 +463,17 @@ jobs:
           git checkout .
 
           pushd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+          echo "keyAlias=readest" > keystore.properties
+          echo "password=readest" >> keystore.properties
+          if [ -n "${{ secrets.ANDROID_KEY_BASE64 }}" ]; then
+            echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+            echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+            base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
+          else
+            keytool -genkeypair -keystore "$RUNNER_TEMP/keystore.jks" -storepass readest -keypass readest \
+              -alias readest -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Readest Fork, OU=Readest, O=Readest, L=NA, ST=NA, C=US"
+          fi
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
           popd
@@ -491,11 +499,14 @@ jobs:
           gh release upload ${{ needs.get-release.outputs.release_tag }} $universial_apk --clobber
           echo "Uploading $arm64_apk to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} $arm64_apk --clobber
-          echo "Uploading signatures to GitHub release"
-          pnpm tauri signer sign $universial_apk
-          pnpm tauri signer sign $arm64_apk
-          gh release upload ${{ needs.get-release.outputs.release_tag }} $universial_apk.sig --clobber
-          gh release upload ${{ needs.get-release.outputs.release_tag }} $arm64_apk.sig --clobber
+          # Updater signatures need a real minisign key. A sideload APK does not.
+          if [ -n "$TAURI_PRIVATE_KEY" ]; then
+            echo "Uploading signatures to GitHub release"
+            pnpm tauri signer sign $universial_apk
+            pnpm tauri signer sign $arm64_apk
+            gh release upload ${{ needs.get-release.outputs.release_tag }} $universial_apk.sig --clobber
+            gh release upload ${{ needs.get-release.outputs.release_tag }} $arm64_apk.sig --clobber
+          fi
 
       - name: attest Android apks
         if: matrix.config.release == 'android'
@@ -506,7 +517,7 @@ jobs:
             apps/readest-app/Readest_${{ needs.get-release.outputs.release_version }}_arm64.apk
 
       - name: download and update latest.json for Android release
-        if: matrix.config.release == 'android'
+        if: matrix.config.release == 'android' && env.TAURI_PRIVATE_KEY != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
